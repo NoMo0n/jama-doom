@@ -1,0 +1,4 @@
+*
+!provider/
+provider/game/
+**/__pycache__/

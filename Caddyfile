@@ -1,0 +1,6 @@
+{$SITE_ADDRESS:localhost} {
+	# Certificate from Caddy's own local CA; see README for trusting it.
+	tls internal
+	encode zstd gzip
+	reverse_proxy provider:8080
+}

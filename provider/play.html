@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DOOM</title>
+<link rel="icon" href="/icon.svg">
+<style>
+  html, body { height: 100%; margin: 0; background: #000; color: #0c0; font: 14px/1.4 monospace; overflow: hidden; }
+  body { display: flex; flex-direction: column; }
+  #bar { flex: none; display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid #063; }
+  #bar .title { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  button { font: inherit; color: #0c0; background: #000; border: 1px solid #0c0; padding: 4px 12px; cursor: pointer; }
+  button:hover, button:focus-visible { background: #0c0; color: #000; outline: none; }
+  button.primary { background: #0c0; color: #000; }
+  button.primary:hover { background: #6f6; }
+  #stage { flex: 1; min-height: 0; position: relative; display: flex; align-items: center; justify-content: center; }
+  /* The engine sets the canvas pixel size; CSS only scales it to fit at 4:3. */
+  #doom { max-width: 100%; max-height: 100%; aspect-ratio: 4 / 3; height: 100%; width: auto;
+          object-fit: contain; image-rendering: pixelated; outline: none; visibility: hidden; }
+  #doom.ready { visibility: visible; }
+  #overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+             justify-content: center; gap: 12px; text-align: center; padding: 16px; cursor: pointer; }
+  #overlay.hidden { display: none; }
+  #overlay .big { font-size: 28px; letter-spacing: 2px; }
+  #overlay .keys { color: #080; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <span class="title" id="title">DOOM</span>
+  <button id="fullscreen" type="button" hidden>Fullscreen</button>
+  <button id="cancel" type="button" hidden>Cancel</button>
+  <button id="link" type="button" class="primary" hidden>Link this session</button>
+</div>
+<div id="stage">
+  <canvas id="doom" tabindex="0"></canvas>
+  <div id="overlay">
+    <div class="big" id="status">CLICK TO PLAY</div>
+    <div class="keys">Arrows move &middot; Ctrl fire &middot; Space use &middot; Shift run &middot; 1-7 weapons &middot; Esc menu</div>
+  </div>
+</div>
+<script>
+(function () {
+  'use strict';
+  var config = __CONFIG__;
+  var params = new URLSearchParams(location.search);
+  var canvas = document.getElementById('doom');
+  var overlay = document.getElementById('overlay');
+  var statusEl = document.getElementById('status');
+  var started = false;
+
+  var isDialog = config.mode === 'select' || config.mode === 'create';
+  var sessionId = config.runId ||
+    ('run-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6));
+  var sessionTitle = config.title || ('DOOM session ' + sessionId);
+  document.getElementById('title').textContent =
+    isDialog ? 'DOOM · OSLC ' + (config.mode === 'select' ? 'selection' : 'creation') + ' dialog' : sessionTitle;
+
+  // ---- OSLC delegated UI response ----------------------------------------
+  function respond(results) {
+    var message = 'oslc-response:' + JSON.stringify({ 'oslc:results': results });
+    if (location.hash === '#oslc-core-windowName-1.0') {
+      // Window-name protocol: the consumer put its return URL in window.name.
+      var returnUrl = window.name;
+      window.name = message;
+      window.location.href = returnUrl;
+      return;
+    }
+    // postMessage protocol (OSLC 2.0 "#oslc-core-postMessage-1.0" and OSLC 3.0).
+    var target = window.parent !== window ? window.parent : window.opener;
+    if (target) {
+      target.postMessage(message, '*');
+    } else {
+      statusEl.textContent = 'NO OSLC CONSUMER FOUND';
+      console.log(message);
+    }
+  }
+
+  if (isDialog) {
+    var link = document.getElementById('link');
+    var cancel = document.getElementById('cancel');
+    link.hidden = cancel.hidden = false;
+    link.addEventListener('click', function () {
+      respond([{ 'oslc:label': sessionTitle, 'rdf:resource': config.base + '/oslc/runs/' + sessionId }]);
+    });
+    cancel.addEventListener('click', function () { respond([]); });
+  }
+
+  // ---- Game ---------------------------------------------------------------
+  window.Module = {
+    canvas: canvas,
+    dependencies: 0,
+    locateFile: function (path) { return '/game/' + path; },
+    monitorRunDependencies: function (left) {
+      this.dependencies = Math.max(this.dependencies, left);
+    },
+    setStatus: function (text) {
+      var m = text && text.match(/([^(]+)\((\d+(\.\d+)?)\/(\d+)\)/);
+      if (m) {
+        var pct = m[2] / m[4] * 100;
+        statusEl.textContent = 'LOADING ' + pct.toFixed(0) + '%';
+        // Same timing as webDOOM's own page: reveal shortly after the data
+        // file lands, then nudge the canvas so SDL picks up input and audio.
+        if (pct === 100) {
+          setTimeout(onReady, 500);
+          setTimeout(function () { canvas.dispatchEvent(new Event('mousedown')); }, 2000);
+        }
+      }
+    },
+    printErr: function (text) { console.warn(text); },
+    onAbort: function (what) { fail('ENGINE ABORTED: ' + what); }
+  };
+
+  var ready = false;
+  function onReady() {
+    if (ready) return;
+    ready = true;
+    overlay.classList.add('hidden');
+    canvas.classList.add('ready');
+    canvas.focus();
+    document.getElementById('fullscreen').hidden = !document.fullscreenEnabled;
+  }
+
+  function fail(text) {
+    overlay.classList.remove('hidden');
+    statusEl.textContent = text;
+  }
+
+  function start() {
+    if (started) return;
+    started = true;
+    if (!config.game) return fail('NO GAME FILES IN THIS IMAGE');
+    statusEl.textContent = 'LOADING 0%';
+    overlay.style.cursor = 'default';
+    var script = document.createElement('script');
+    script.src = '/game/' + config.game + '.js';
+    script.onerror = function () { fail('COULD NOT LOAD ' + config.game.toUpperCase()); };
+    document.body.appendChild(script);
+  }
+
+  canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  canvas.addEventListener('webglcontextlost', function (e) {
+    e.preventDefault();
+    fail('WEBGL CONTEXT LOST - RELOAD');
+  });
+  // Keep the keyboard on the game; the page itself has nothing to scroll.
+  document.getElementById('stage').addEventListener('mousedown', function () { canvas.focus(); });
+  window.addEventListener('keydown', function (e) {
+    if (ready && document.activeElement === canvas &&
+        [' ', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab'].indexOf(e.key) !== -1) {
+      e.preventDefault();
+    }
+  });
+  document.getElementById('fullscreen').addEventListener('click', function () {
+    document.getElementById('stage').requestFullscreen();
+    canvas.focus();
+  });
+
+  // Browsers need a user gesture before audio will play, hence the click.
+  overlay.addEventListener('click', start);
+  if (params.has('autostart')) start();
+})();
+</script>
+</body>
+</html>

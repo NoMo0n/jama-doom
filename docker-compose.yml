@@ -1,0 +1,31 @@
+services:
+  provider:
+    build:
+      context: .
+      args:
+        GAMES: ${GAMES:-doom1}
+    environment:
+      # Leave empty to derive URLs from the request (Caddy forwards host/proto).
+      PUBLIC_URL: ${PUBLIC_URL:-}
+    ports:
+      # Plain HTTP, straight to the provider. Handy for curl.
+      - "127.0.0.1:${HTTP_PORT:-8080}:8080"
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    depends_on:
+      - provider
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+    ports:
+      - "127.0.0.1:${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:
